@@ -51,6 +51,32 @@ and a CLINT timer. Generated logs, measurements, profiles and build artifacts ar
 kept locally and ignored by Git. This README retains the final reported results;
 rerun the scripts below to generate fresh measurements and validation evidence.
 
+## Host work per emulated instruction
+
+Hardware-counter samples taken inside the running CoreMark loop on Apple M5
+measured the following. This captures execution after initial translation/cache
+warmup; translation overhead was not separately subtracted, so any translation
+occurring during the sample remains included.
+
+| Measured build on Apple M5 | Host instructions / guest instruction | Host cycles / guest instruction | Host IPC |
+| --- | ---: | ---: | ---: |
+| C++ Spike, first optimization round (`spike-opt`) | 27.7 | 4.51 | 6.14 |
+| QEMU/TCG, baseline | 9.1 | 1.28 | 7.15 |
+
+QEMU therefore executes roughly one-third as many host instructions per guest
+instruction in this workload. These figures describe the earlier Spike build,
+not the final `spike-opt3` build in the results table. We have no corresponding
+hardware-counter measurements for final Spike, OxySpike, or the Intel host.
+Guest MIPS alone cannot determine host instructions per guest instruction.
+
+The measurements used Instruments CPU Counters attached during CoreMark. Raw
+counter columns were identified using the retained [calibration sources](results/round2/).
+Counter deltas were summed over consecutive same-core samples of the busiest
+thread. Guest instructions in each window were estimated from independently
+measured guest MIPS, so the ratios are approximate to a few percent. Effective
+sample windows were 3.40 seconds for Spike and 1.64 seconds for QEMU. The raw
+outputs remain local under the repository's generated-artifact policy.
+
 ## Implementations
 
 The optimized [C++ Spike](spike/) preserves instruction caches across changes to
