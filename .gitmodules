@@ -3,7 +3,7 @@
 	url = https://github.com/ripopov/riscv-isa-sim.git
 [submodule "qemu"]
 	path = qemu
-	url = https://gitlab.com/qemu-project/qemu.git
+	url = https://github.com/qemu/qemu.git
 [submodule "coremark"]
 	path = coremark
 	url = https://github.com/eembc/coremark.git
