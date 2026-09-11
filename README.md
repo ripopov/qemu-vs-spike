@@ -66,7 +66,7 @@ occurring during the sample remains included.
 QEMU therefore executes roughly one-third as many host instructions per guest
 instruction in this workload. These figures describe the earlier Spike build,
 not the final `spike-opt3` build in the results table. We have no corresponding
-hardware-counter measurements for final Spike, OxySpike, or the Intel host.
+hardware-counter measurements for final Spike or OxySpike on M5.
 Guest MIPS alone cannot determine host instructions per guest instruction.
 
 The measurements used Instruments CPU Counters attached during CoreMark. Raw
@@ -76,6 +76,60 @@ thread. Guest instructions in each window were estimated from independently
 measured guest MIPS, so the ratios are approximate to a few percent. Effective
 sample windows were 3.40 seconds for Spike and 1.64 seconds for QEMU. The raw
 outputs remain local under the repository's generated-artifact policy.
+
+## Intel 265K host work per emulated instruction
+
+The current Intel builds were measured with Linux `perf stat` on performance
+core 0. Counters were enabled 0.75 seconds after `BENCH_COREMARK_START`, collected
+for approximately 1.5 seconds, and disabled before `BENCH_COREMARK_END`. This
+excludes boot and initial translation warmup; any later translation remains counted.
+
+| Simulator | Host instructions / guest instruction | Host cycles / guest instruction | Host IPC | Samples |
+| --- | ---: | ---: | ---: | ---: |
+| C++ Spike, optimized | 33.2 | 6.61 | 5.02 | 3 |
+| QEMU/TCG | 10.8 | 1.91 | 5.65 | 6 |
+| OxySpike, release | 106.9 | 17.48 | 6.10 | 3 |
+| OxySpike, Linux-trained PGO | 103.1 | 16.48 | 6.23 | 3 |
+
+Entries are independently computed medians. The first series used three serial
+rounds with alternating build order. QEMU received three additional check runs
+after its first run took 6.29 seconds versus roughly 3.5 seconds in the repeats;
+all six samples, including that outlier, are retained in its median. Every run
+passed the CoreMark CRC, iteration-count and exit checks.
+
+Host instructions and cycles are grouped `cpu_core/instructions/` and
+`cpu_core/cpu-cycles/` events, including user and kernel execution for the simulator
+and inherited threads. Both counters ran at 100% without multiplexing during the
+measurement windows. IPC is their direct ratio. Host/guest ratios estimate guest
+instructions in the window as full-loop guest instructions × window duration /
+full-loop duration. Spike and OxySpike use the guest's `instret` delta; QEMU uses
+9,718,734,227 instructions, the median of three separate plugin-instrumented runs.
+The plugin is disabled during PMU measurement. These host/guest ratios are estimates,
+not synchronized exact counts, and are sensitive to variation within the loop.
+
+The measurements indicate that OxySpike retires host instructions at a higher IPC
+than Spike but executes roughly three times as many per guest instruction in this
+workload. M5 and Intel instruction ratios describe different host ISAs and builds;
+they are not a direct CPU-efficiency comparison.
+
+Reproduce with [the counter script](scripts/measure-host-counters.py), after preparing
+the guest images and simulator builds below and enabling per-process perf access:
+
+```sh
+sudo sysctl -w kernel.perf_event_paranoid=1
+mkdir -p results/host-counters
+taskset -c 0 python3 scripts/benchmark-coremark.py --iterations 32000 \
+  --simulators qemu --modes baseline --counted --runs 3 --warmups 0 \
+  --output results/host-counters/my-qemu-counts.jsonl
+# Use the median guest instruction count printed by the counted runs.
+python3 scripts/measure-host-counters.py --tag my-counters --runs 3 \
+  --variants spike:opt3 qemu:baseline oxyspike:release oxyspike:my-pgo \
+  --qemu-instructions 9718734227
+```
+
+Use the instruction count from your own counted runs if it differs. Counter logs,
+per-run ratios and summaries are written under `results/host-counters/` and remain
+ignored by Git. Restore the previous perf permission setting afterward if desired.
 
 ## Implementations
 
