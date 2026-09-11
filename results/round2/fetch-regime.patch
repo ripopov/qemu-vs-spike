@@ -1,0 +1,223 @@
+diff --git a/riscv/mmu.cc b/riscv/mmu.cc
+index f0b3985..e08a9c2 100644
+--- a/riscv/mmu.cc
++++ b/riscv/mmu.cc
+@@ -17,6 +17,8 @@ mmu_t::mmu_t(simif_t* sim, endianness_t endianness, processor_t* proc, reg_t cac
+ #ifdef RISCV_ENABLE_DUAL_ENDIAN
+   target_big_endian(endianness == endianness_big),
+ #endif
++  fetch_cache(nullptr), icache(nullptr), tlb_insn(nullptr),
++  tlb_epoch(0), icache_epoch(0),
+   check_triggers_fetch(false),
+   check_triggers_load(false),
+   check_triggers_store(false)
+@@ -24,6 +26,7 @@ mmu_t::mmu_t(simif_t* sim, endianness_t endianness, processor_t* proc, reg_t cac
+ #ifndef RISCV_ENABLE_DUAL_ENDIAN
+   assert(endianness == endianness_little);
+ #endif
++  set_fetch_regime(PRV_M, false);
+   flush_tlb();
+   yield_load_reservation();
+ }
+@@ -34,15 +37,46 @@ mmu_t::~mmu_t()
+ 
+ void mmu_t::flush_icache()
+ {
+-  for (size_t i = 0; i < ICACHE_ENTRIES; i++)
+-    icache[i].tag = -1;
++  // Invalidate the current set now and every other set when it is selected.
++  icache_epoch++;
++  sync_fetch_cache(fetch_cache);
+ }
+ 
+ void mmu_t::flush_tlb()
+ {
+-  memset(tlb_insn, -1, sizeof(tlb_insn));
++  tlb_epoch++;
++  icache_epoch++;
++  sync_fetch_cache(fetch_cache);
+   flush_data_tlb();
+-  flush_icache();
++}
++
++void mmu_t::sync_fetch_cache(fetch_cache_t* set)
++{
++  if (set->tlb_epoch != tlb_epoch) {
++    memset(set->tlb_insn, -1, sizeof(set->tlb_insn));
++    set->tlb_epoch = tlb_epoch;
++  }
++  if (set->icache_epoch != icache_epoch) {
++    for (size_t i = 0; i < ICACHE_ENTRIES; i++)
++      set->icache[i].tag = -1;
++    set->icache_epoch = icache_epoch;
++  }
++}
++
++void mmu_t::set_fetch_regime(reg_t prv, bool virt)
++{
++  size_t index = (prv & 3) | (virt ? 4 : 0);
++  auto& set = fetch_caches[index];
++  if (!set) {
++    set.reset(new fetch_cache_t);
++    // Start stale so that sync_fetch_cache initializes it.
++    set->tlb_epoch = tlb_epoch - 1;
++    set->icache_epoch = icache_epoch - 1;
++  }
++  sync_fetch_cache(set.get());
++  fetch_cache = set.get();
++  icache = set->icache;
++  tlb_insn = set->tlb_insn;
+ }
+ 
+ void mmu_t::flush_data_tlb()
+@@ -441,8 +475,27 @@ void mmu_t::flush_stlb_ppn(reg_t ppn)
+ 
+ void mmu_t::flush_itlb_ppn(reg_t ppn)
+ {
+-  if (flush_tlb_ppn(ppn, tlb_insn, tlb_insn_reverse_tags))
+-    flush_icache();
++  if (!tlb_insn_reverse_tags.contains(ppn))
++    return;
++
++  tlb_insn_reverse_tags.clear();
++
++  // Only sets whose translations are current can hold the page; stale sets
++  // are cleared before they are selected again.
++  for (auto& set : fetch_caches) {
++    if (!set || set->tlb_epoch != tlb_epoch)
++      continue;
++    for (size_t i = 0; i < TLB_ENTRIES; i++) {
++      auto& entry = set->tlb_insn[i];
++      auto entry_ppn = entry.data.target_addr >> PGSHIFT;
++      if (entry_ppn == ppn)
++        entry.tag = -1;
++      else if (entry.tag != (reg_t)-1)
++        tlb_insn_reverse_tags.insert(entry_ppn);
++    }
++  }
++
++  flush_icache();
+ }
+ 
+ tlb_entry_t mmu_t::refill_tlb(reg_t vaddr, reg_t paddr, char* host_addr, access_type type)
+diff --git a/riscv/mmu.h b/riscv/mmu.h
+index d58573d..399a6e3 100644
+--- a/riscv/mmu.h
++++ b/riscv/mmu.h
+@@ -17,6 +17,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cstddef>
++#include <memory>
+ #include <stdlib.h>
+ 
+ // virtual memory configuration
+@@ -65,6 +66,22 @@ struct pte_cache_entry_t {
+   reg_t pte;
+ };
+ 
++// Decoded-instruction cache and instruction TLB for one fetch regime.  A fetch
++// regime is a (privilege, virtualization) pair: instruction translations and
++// the decoded instructions built from them are only valid for the regime that
++// filled them, so each regime keeps its own copies and a privilege change
++// selects a set instead of discarding all of them.  Epoch counters implement
++// lazy invalidation: a set whose epoch differs from the MMU's is cleared when
++// it is next selected.
++struct fetch_cache_t {
++  static const reg_t ICACHE_ENTRIES = 4096;
++  static const reg_t TLB_ENTRIES = 256;
++  icache_entry_t icache[ICACHE_ENTRIES];
++  dtlb_entry_t tlb_insn[TLB_ENTRIES];
++  uint64_t tlb_epoch;
++  uint64_t icache_epoch;
++};
++
+ struct xlate_flags_t {
+   const bool forced_virt : 1 {false};
+   const bool hlvx : 1 {false};
+@@ -303,7 +320,7 @@ public:
+     return have_reservation;
+   }
+ 
+-  static const reg_t ICACHE_ENTRIES = 4096;
++  static const reg_t ICACHE_ENTRIES = fetch_cache_t::ICACHE_ENTRIES;
+ 
+   inline size_t icache_index(reg_t addr)
+   {
+@@ -370,6 +387,10 @@ public:
+   void flush_data_tlb();
+   void flush_icache();
+ 
++  // Select the instruction cache and instruction TLB for a privilege regime.
++  // Data translations are not affected.
++  void set_fetch_regime(reg_t prv, bool virt);
++
+   void register_memtracer(memtracer_t*);
+ 
+   int is_misaligned_enabled()
+@@ -399,11 +420,19 @@ private:
+   reg_t load_reservation_address;
+   reg_t blocksz;
+ 
+-  // implement an instruction cache for simulator performance
+-  icache_entry_t icache[ICACHE_ENTRIES];
++  // implement an instruction cache for simulator performance; one per fetch
++  // regime, allocated on first use.  icache and tlb_insn alias the current set.
++  static const size_t FETCH_REGIMES = 8; // index = prv | (virt << 2)
++  std::unique_ptr<fetch_cache_t> fetch_caches[FETCH_REGIMES];
++  fetch_cache_t* fetch_cache;
++  icache_entry_t* icache;
++  dtlb_entry_t* tlb_insn;
++  uint64_t tlb_epoch;
++  uint64_t icache_epoch;
++  void sync_fetch_cache(fetch_cache_t* set);
+ 
+   // implement a TLB for simulator performance
+-  static const reg_t TLB_ENTRIES = 256;
++  static const reg_t TLB_ENTRIES = fetch_cache_t::TLB_ENTRIES;
+   // If a TLB tag has TLB_CHECK_TRIGGERS set, then the MMU must check for a
+   // trigger match before completing an access.
+   static const reg_t TLB_CHECK_TRIGGERS = reg_t(1) << 63;
+@@ -412,7 +441,6 @@ private:
+   static const reg_t TLB_FLAGS = TLB_CHECK_TRIGGERS | TLB_CHECK_TRACER | TLB_MMIO;
+   dtlb_entry_t tlb_load[TLB_ENTRIES];
+   dtlb_entry_t tlb_store[TLB_ENTRIES];
+-  dtlb_entry_t tlb_insn[TLB_ENTRIES];
+ 
+   static const reg_t PTE_CACHE_ENTRIES = 251;
+   pte_cache_entry_t pte_cache[PTE_CACHE_ENTRIES];
+diff --git a/riscv/processor.cc b/riscv/processor.cc
+index 593a85f..716e5df 100644
+--- a/riscv/processor.cc
++++ b/riscv/processor.cc
+@@ -156,6 +156,7 @@ void processor_t::reset()
+ {
+   xlen = isa.get_max_xlen();
+   state.reset(this, isa.get_max_isa());
++  mmu->set_fetch_regime(state.prv, state.v);
+   mmu->flush_tlb();
+   if (any_vector_extensions())
+     VU.reset();
+@@ -351,13 +352,21 @@ reg_t processor_t::legalize_privilege(reg_t prv)
+ 
+ void processor_t::set_privilege(reg_t prv, bool virt)
+ {
+-  mmu->flush_tlb();
++  // Data translations depend on the effective privilege, so they are always
++  // discarded.  Instruction translations and decoded instructions depend only
++  // on the new regime, which keeps its own caches.  Debug Mode changes what
++  // memory is accessible, so entering or leaving it discards everything.
++  if (state.debug_mode)
++    mmu->flush_tlb();
++  else
++    mmu->flush_data_tlb();
+   state.prev_prv = state.prv;
+   state.prev_v = state.v;
+   state.prv = legalize_privilege(prv);
+   state.v = virt && state.prv != PRV_M;
+   state.prv_changed = state.prv != state.prev_prv;
+   state.v_changed = state.v != state.prev_v;
++  mmu->set_fetch_regime(state.prv, state.v);
+ }
+ 
+ const char* processor_t::get_privilege_string() const

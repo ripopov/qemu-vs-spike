@@ -1,0 +1,14 @@
+diff --git a/riscv/execute.cc b/riscv/execute.cc
+index 7925057..a350bf5 100644
+--- a/riscv/execute.cc
++++ b/riscv/execute.cc
+@@ -295,6 +295,9 @@ void processor_t::step(size_t n)
+       else while (instret < n)
+       {
+         // Main simulation loop, fast path.
++        #ifdef __clang__
++        #pragma clang loop unroll_count(4)
++        #endif
+         for (auto ic_entry = _mmu->access_icache(pc); instret < n; instret++) {
+           auto fetch = ic_entry->data;
+           ic_entry = ic_entry->next;

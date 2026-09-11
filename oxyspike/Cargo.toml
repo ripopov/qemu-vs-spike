@@ -1,0 +1,23 @@
+[package]
+name = "oxyspike"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+description = "Rust RISC-V instruction set simulator"
+
+[features]
+dispatch-profile = []
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+num-bigint = "=0.4.8"
+num-integer = "=0.1.47"
+num-traits = "=0.2.19"
+
+[lints.rust]
+unsafe_code = "forbid"

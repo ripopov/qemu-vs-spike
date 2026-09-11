@@ -1,0 +1,53 @@
+diff --git a/riscv/csrs.cc b/riscv/csrs.cc
+index 63f8c9c..8b960f4 100644
+--- a/riscv/csrs.cc
++++ b/riscv/csrs.cc
+@@ -616,11 +616,13 @@ reg_t base_status_csr_t::adjust_sd(const reg_t val) const noexcept {
+ }
+ 
+ void base_status_csr_t::maybe_flush_tlb(const reg_t newval) noexcept {
++  // These fields affect data accesses, not instruction fetches.  Preserve the
++  // instruction TLB and decoded instructions when data permissions change.
+   if ((newval ^ read()) &
+       (MSTATUS_MPP | MSTATUS_MPRV
+        | (has_page ? (MSTATUS_MXR | MSTATUS_SUM) : 0)
+       ))
+-    proc->get_mmu()->flush_tlb();
++    proc->get_mmu()->flush_data_tlb();
+ }
+ 
+ namespace {
+diff --git a/riscv/mmu.cc b/riscv/mmu.cc
+index d7b2dd1..f0b3985 100644
+--- a/riscv/mmu.cc
++++ b/riscv/mmu.cc
+@@ -41,11 +41,15 @@ void mmu_t::flush_icache()
+ void mmu_t::flush_tlb()
+ {
+   memset(tlb_insn, -1, sizeof(tlb_insn));
++  flush_data_tlb();
++  flush_icache();
++}
++
++void mmu_t::flush_data_tlb()
++{
+   memset(tlb_load, -1, sizeof(tlb_load));
+   memset(tlb_store, -1, sizeof(tlb_store));
+   memset(pte_cache, -1, sizeof(pte_cache));
+-
+-  flush_icache();
+ }
+ 
+ [[noreturn]] void throw_access_exception(bool virt, reg_t addr, access_type type)
+diff --git a/riscv/mmu.h b/riscv/mmu.h
+index 33bada8..d58573d 100644
+--- a/riscv/mmu.h
++++ b/riscv/mmu.h
+@@ -367,6 +367,7 @@ public:
+   }
+ 
+   void flush_tlb();
++  void flush_data_tlb();
+   void flush_icache();
+ 
+   void register_memtracer(memtracer_t*);

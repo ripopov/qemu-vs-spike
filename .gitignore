@@ -1,0 +1,18 @@
+/build/
+/guest/
+/results/*.profraw
+/results/*.profdata
+__pycache__/
+
+/results/profiles/
+
+# Generated experiment outputs stay local; retain source fixtures and reports.
+/results/**
+!/results/**/
+!/results/**/*.md
+!/results/**/*.c
+!/results/**/*.rs
+!/results/**/*.py
+!/results/**/*.patch
+!/results/**/*.dts
+!/results/**/*.config
